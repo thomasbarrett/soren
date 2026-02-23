@@ -2,6 +2,8 @@
 
 Agentic coding tool.
 
+![Demo](docs/demo.png)
+
 ## What it does
 
 - Write and edit code across your entire project
