@@ -72,7 +72,7 @@ func Register(server *mcp.Server, cfg Config) error {
 			return nil, TaskOutput{Error: err.Error()}, err
 		}
 
-		result, err := subAgent.Run(ctx, args.Prompt)
+		result, err := subAgent.NewSession().Send(ctx, args.Prompt)
 		if err != nil {
 			return nil, TaskOutput{Error: err.Error()}, err
 		}

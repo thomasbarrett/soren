@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -9,7 +10,6 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/openai/openai-go"
 )
 
 // Mode represents the current interaction mode
@@ -25,23 +25,73 @@ const (
 var (
 	cyanStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 	purpleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	greyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	blueStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
+	redStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("167"))
 	userStyle   = lipgloss.NewStyle().
 			Background(lipgloss.AdaptiveColor{Light: "255", Dark: "255"}).
 			Foreground(lipgloss.AdaptiveColor{Light: "0", Dark: "0"})
-	greyLine = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render
+	greyLine = greyStyle.Render
 )
+
+// turnKind identifies the kind of a committed conversation turn.
+type turnKind int
+
+const (
+	turnUser turnKind = iota
+	turnAssistant
+	turnTools
+)
+
+// toolCallState tracks one in-flight or completed tool call.
+type toolCallState struct {
+	id     string
+	name   string
+	args   string
+	result string
+	done   bool
+}
+
+// chatTurn is a committed entry in the conversation display.
+type chatTurn struct {
+	kind      turnKind
+	thinking  string // reasoning content that preceded this turn (may be empty)
+	content   string
+	toolCalls []toolCallState
+}
+
+// streamDone is returned by waitForEvent when the event channel closes.
+type streamDone struct{}
+
+// waitForEvent returns a tea.Cmd that reads the next event from ch.
+func waitForEvent(ch <-chan agent.StreamEvent) tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-ch
+		if !ok {
+			return streamDone{}
+		}
+		return event
+	}
+}
 
 // Model holds chat state
 type Model struct {
-	agent       *agent.Agent
-	queue       []openai.ChatCompletionMessageParamUnion
+	session     *agent.Session
+	queue       []string
+	eventCh     <-chan agent.StreamEvent
+	turns       []chatTurn
+	inFlight    []toolCallState
+	thinking    bool
+	thinkingBuf string // live thinking tokens for the current turn
+	textBuf     string // live response tokens for the current turn
+	errMsg      string // last error message to display
 	textInput   textinput.Model
 	width       int
 	currentMode Mode
 }
 
 // New creates a new UI model
-func New(a *agent.Agent) Model {
+func New(s *agent.Session) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Type a message"
 	ti.Prompt = "❯ "
@@ -50,7 +100,7 @@ func New(a *agent.Agent) Model {
 	ti.Width = 50
 
 	return Model{
-		agent:       a,
+		session:     s,
 		textInput:   ti,
 		width:       50,
 		currentMode: ModeNormal,
@@ -74,7 +124,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			input := strings.TrimSpace(m.textInput.Value())
 			if input != "" {
-				m.queue = append(m.queue, openai.UserMessage(input))
+				m.queue = append(m.queue, input)
 				m.textInput.SetValue("")
 			}
 		case "shift+tab":
@@ -85,14 +135,78 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.textInput.Width = m.width
 
-	case openai.ChatCompletionMessageParamUnion:
-		cmds = append(cmds, m.agent.Update(msg))
+	case agent.EventThinking:
+		if len(m.inFlight) > 0 {
+			m.turns = append(m.turns, chatTurn{kind: turnTools, thinking: m.thinkingBuf, toolCalls: m.inFlight})
+			m.inFlight = nil
+			m.thinkingBuf = ""
+			m.textBuf = ""
+		}
+		m.thinking = true
+		cmds = append(cmds, waitForEvent(m.eventCh))
+
+	case agent.EventThinkingDelta:
+		m.thinking = false
+		m.thinkingBuf += msg.Token
+		cmds = append(cmds, waitForEvent(m.eventCh))
+
+	case agent.EventTextDelta:
+		m.thinking = false
+		m.textBuf += msg.Token
+		cmds = append(cmds, waitForEvent(m.eventCh))
+
+	case agent.EventToolCall:
+		m.thinking = false
+		m.inFlight = append(m.inFlight, toolCallState{
+			id:   msg.ID,
+			name: msg.Name,
+			args: msg.Arguments,
+		})
+		cmds = append(cmds, waitForEvent(m.eventCh))
+
+	case agent.EventToolResult:
+		for i := range m.inFlight {
+			if m.inFlight[i].id == msg.CallID {
+				m.inFlight[i].result = msg.Content
+				m.inFlight[i].done = true
+				break
+			}
+		}
+		cmds = append(cmds, waitForEvent(m.eventCh))
+
+	case agent.EventText:
+		m.thinking = false
+		if len(m.inFlight) > 0 {
+			m.turns = append(m.turns, chatTurn{kind: turnTools, thinking: m.thinkingBuf, toolCalls: m.inFlight})
+			m.inFlight = nil
+		}
+		m.turns = append(m.turns, chatTurn{kind: turnAssistant, thinking: m.thinkingBuf, content: msg.Content})
+		m.thinkingBuf = ""
+		m.textBuf = ""
+		m.eventCh = nil
+
+	case agent.EventError:
+		m.thinking = false
+		m.inFlight = nil
+		m.thinkingBuf = ""
+		m.textBuf = ""
+		m.errMsg = msg.Err.Error()
+		m.eventCh = nil
+
+	case streamDone:
+		// Goroutine exited without a terminal event (shouldn't happen).
+		m.thinking = false
+		m.eventCh = nil
 	}
 
-	if !m.agent.Busy() && len(m.queue) > 0 {
-		msg := m.queue[0]
+	// Start next queued message when no stream is active.
+	if m.eventCh == nil && len(m.queue) > 0 {
+		input := m.queue[0]
 		m.queue = m.queue[1:]
-		cmds = append(cmds, m.agent.Update(msg))
+		m.turns = append(m.turns, chatTurn{kind: turnUser, content: input})
+		m.errMsg = ""
+		m.eventCh = m.session.Stream(context.Background(), input)
+		cmds = append(cmds, waitForEvent(m.eventCh))
 	}
 
 	var cmd tea.Cmd
@@ -102,36 +216,99 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// indent inserts padding spaces after every newline so that continuation
+// lines align with the text after the leading bullet/icon.
+func indent(s string, pad int) string {
+	return strings.ReplaceAll(s, "\n", "\n"+strings.Repeat(" ", pad))
+}
+
 // View renders the chat UI
 func (m Model) View() string {
-	var builder strings.Builder
+	var b strings.Builder
 	width := m.width
 	if width <= 0 {
 		width = 50
 	}
 
-	builder.WriteString(m.agent.View(width))
+	const pad = 2 // width of "⏺ " prefix
+	wrapStyle := lipgloss.NewStyle().Width(width - 4)
 
-	for _, msg := range m.queue {
-		if msg.OfUser != nil {
-			content := msg.OfUser.Content.OfString.String()
-			builder.WriteString(fmt.Sprintf("%s\n\n", userStyle.Render(fmt.Sprintf("\u276f %s ", content))))
+	renderThinking := func(text string) string {
+		return greyStyle.Render("\u23fa") + " " + indent(greyStyle.Width(width-4).Render(strings.TrimSpace(text)), pad) + "\n\n"
+	}
+	renderText := func(text string) string {
+		return greyStyle.Render("\u23fa") + " " + indent(wrapStyle.Render(strings.TrimSpace(text)), pad) + "\n\n"
+	}
+
+	// Committed conversation turns.
+	for _, t := range m.turns {
+		switch t.kind {
+		case turnUser:
+			b.WriteString(fmt.Sprintf("%s\n\n", userStyle.Render(fmt.Sprintf("\u276f %s ", t.content))))
+		case turnAssistant:
+			if t.thinking != "" {
+				b.WriteString(renderThinking(t.thinking))
+			}
+			b.WriteString(renderText(t.content))
+		case turnTools:
+			if t.thinking != "" {
+				b.WriteString(renderThinking(t.thinking))
+			}
+			for _, tc := range t.toolCalls {
+				b.WriteString(blueStyle.Render("\u23fa") + " " + tc.name + "(" + tc.args + ")\n")
+				b.WriteString("  \u23bf  Done (" + tc.result + ")\n\n")
+			}
 		}
 	}
 
-	builder.WriteString(greyLine(strings.Repeat("─", width)) + "\n")
-	builder.WriteString(m.textInput.View() + "\n")
-	builder.WriteString(greyLine(strings.Repeat("─", width)) + "\n")
+	// Live thinking tokens for the current turn.
+	if m.thinkingBuf != "" {
+		b.WriteString(renderThinking(m.thinkingBuf))
+	}
+
+	// In-flight tool calls for the current turn.
+	for _, tc := range m.inFlight {
+		b.WriteString(blueStyle.Render("\u23fa") + " " + tc.name + "(" + tc.args + ")\n")
+		if tc.done {
+			b.WriteString("  \u23bf  Done (" + tc.result + ")\n\n")
+		} else {
+			b.WriteString("  \u23bf  " + greyStyle.Render("\u23fa") + " Running...\n\n")
+		}
+	}
+
+	// Live response tokens for the current turn.
+	if m.textBuf != "" {
+		b.WriteString(renderText(m.textBuf))
+	}
+
+	// Spinner shown only before the first token arrives.
+	if m.thinking {
+		b.WriteString(greyStyle.Render("\u23fa") + " Thinking...\n\n")
+	}
+
+	// Error message from the last stream.
+	if m.errMsg != "" {
+		b.WriteString(redStyle.Render("\u23fa") + " " + redStyle.Render(m.errMsg) + "\n\n")
+	}
+
+	// Queued messages not yet sent — show them optimistically.
+	for _, pending := range m.queue {
+		b.WriteString(fmt.Sprintf("%s\n\n", userStyle.Render(fmt.Sprintf("\u276f %s ", pending))))
+	}
+
+	b.WriteString(greyLine(strings.Repeat("\u2500", width)) + "\n")
+	b.WriteString(m.textInput.View() + "\n")
+	b.WriteString(greyLine(strings.Repeat("\u2500", width)) + "\n")
 
 	var modeStr string
 	switch m.currentMode {
 	case ModeNormal:
 		modeStr = "? for shortcuts"
 	case ModePlan:
-		modeStr = cyanStyle.Render("⏸ plan mode on")
+		modeStr = cyanStyle.Render("\u23f8 plan mode on")
 	case ModeAutoAccept:
-		modeStr = purpleStyle.Render("⏵⏵ accept edits on")
+		modeStr = purpleStyle.Render("\u23f5\u23f5 accept edits on")
 	}
-	builder.WriteString(modeStr)
-	return builder.String()
+	b.WriteString(modeStr)
+	return b.String()
 }

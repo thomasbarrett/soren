@@ -13,11 +13,6 @@ import (
 	"github.com/openai/openai-go/shared"
 )
 
-const (
-	defaultPromptIntro = "You can call the following tools via JSON:\n\n"
-	defaultPromptOutro = "Call tools by responding with JSON: {\"tool\": \"name\", \"args\": {...}}. After receiving results, provide your final answer.\n"
-)
-
 // buildSystemPrompt generates a prompt for MCP tools using the agent's session,
 // prefixed with content from .soren/agents/<agent-name>.md if it exists,
 // or SOREN.md if the agent name is "default".
@@ -55,8 +50,7 @@ func (a *Agent) buildSystemPrompt(ctx context.Context) error {
 	}
 
 	a.tools = tools
-	systemPrompt := strings.Join(parts, "\n\n")
-	a.History.Add(openai.SystemMessage(systemPrompt))
+	a.systemPrompt = strings.Join(parts, "\n\n")
 
 	return nil
 }

@@ -1,6 +1,6 @@
 # Soren
 
-Agentic coding tool.
+Agent Harness.
 
 ![Demo](docs/demo.png)
 

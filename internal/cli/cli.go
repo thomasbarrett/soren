@@ -125,14 +125,16 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Create and run agent
+	// Create agent and session
 	a, err := agent.NewAgent(ctx, cfg)
 	if err != nil {
 		return err
 	}
 
+	session := a.NewSession()
+
 	// Run UI
-	p := tea.NewProgram(ui.New(a))
+	p := tea.NewProgram(ui.New(session))
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("error running program: %w", err)
 	}
