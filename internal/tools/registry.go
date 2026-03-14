@@ -3,98 +3,124 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Provider interface defines the methods needed to provide tools
-// This mirrors the mcp.Session interface for ListTools and CallTool methods
+// Provider is the subset of mcp.Session needed to list and call tools.
 type Provider interface {
 	ListTools(ctx context.Context, params *mcp.ListToolsParams) (*mcp.ListToolsResult, error)
 	CallTool(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error)
 }
 
-// Registry manages multiple tool providers
+// Registry multiplexes tool calls across multiple MCP servers.
+//
+// Builtin tool names are kept as-is. External tools are namespaced as
+// "mcp__<server>__<tool>" to avoid collisions; the prefix is stripped
+// before forwarding to the server.
 type Registry struct {
-	client *mcp.Client
-	tools  map[string]Provider
+	client  *mcp.Client
+	servers map[string]Provider
 }
 
-// NewRegistry creates a new registry instance
 func NewRegistry() *Registry {
-	client := mcp.NewClient(&mcp.Implementation{
-		Name:    "soren",
-		Version: "v0.1.0",
-	}, nil)
-
 	return &Registry{
-		client: client,
-		tools:  make(map[string]Provider),
+		client: mcp.NewClient(&mcp.Implementation{
+			Name:    "soren",
+			Version: "v0.1.0",
+		}, nil),
+		servers: make(map[string]Provider),
 	}
 }
 
 func (r *Registry) Connect(ctx context.Context, name string, transport mcp.Transport) error {
+	if strings.Contains(name, "__") {
+		return fmt.Errorf("server name %q must not contain \"__\"", name)
+	}
+
 	session, err := r.client.Connect(ctx, transport, nil)
 	if err != nil {
-		return fmt.Errorf("failed to connect to  server %s: %w", name, err)
+		return fmt.Errorf("failed to connect to server %s: %w", name, err)
 	}
 
-	if err := r.add(name, session); err != nil {
-		return fmt.Errorf("failed to register server %s: %w", name, err)
-	}
-
+	r.servers[name] = session
 	return nil
 }
 
-// Add registers a provider by first listing its tools and mapping each tool name to the provider
-func (r *Registry) add(name string, provider Provider) error {
-	// List tools from the provider
-	toolsList, err := provider.ListTools(context.Background(), &mcp.ListToolsParams{})
-	if err != nil {
-		return fmt.Errorf("failed to list tools from provider %s: %w", name, err)
-	}
-
-	// Map each tool name to this provider
-	for _, tool := range toolsList.Tools {
-		r.tools[tool.Name] = provider
-	}
-
-	return nil
-}
-
-// ListTools returns tools from all registered providers
-// Implements the Provider interface
 func (r *Registry) ListTools(ctx context.Context, params *mcp.ListToolsParams) (*mcp.ListToolsResult, error) {
-	// Get unique providers
-	seenProviders := make(map[Provider]bool)
-	var uniqueProviders []Provider
-	for _, provider := range r.tools {
-		if !seenProviders[provider] {
-			seenProviders[provider] = true
-			uniqueProviders = append(uniqueProviders, provider)
+	var all []*mcp.Tool
+	for name, provider := range r.servers {
+		tools, err := listAllTools(ctx, provider)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list tools from %s: %w", name, err)
+		}
+		for _, tool := range tools {
+			t := *tool
+			t.Name = qualifyToolName(name, tool.Name)
+			all = append(all, &t)
 		}
 	}
 
-	var allTools []*mcp.Tool
-	for _, provider := range uniqueProviders {
-		result, err := provider.ListTools(ctx, params)
+	return &mcp.ListToolsResult{Tools: all}, nil
+}
+
+// listAllTools paginates through a provider's tool list until no cursor remains.
+func listAllTools(ctx context.Context, provider Provider) ([]*mcp.Tool, error) {
+	var all []*mcp.Tool
+	var cursor string
+	for {
+		result, err := provider.ListTools(ctx, &mcp.ListToolsParams{Cursor: cursor})
 		if err != nil {
 			return nil, err
 		}
-		allTools = append(allTools, result.Tools...)
+		all = append(all, result.Tools...)
+		if result.NextCursor == "" {
+			return all, nil
+		}
+		cursor = result.NextCursor
 	}
-
-	return &mcp.ListToolsResult{
-		Tools: allTools,
-	}, nil
 }
 
-// CallTool calls a tool by looking up the provider directly by tool name
 func (r *Registry) CallTool(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
-	provider, exists := r.tools[params.Name]
-	if !exists {
-		return nil, fmt.Errorf("tool %s not found", params.Name)
+	server, tool, ok := splitToolName(params.Name)
+	if !ok {
+		return nil, fmt.Errorf("invalid tool name: %s", params.Name)
 	}
 
-	return provider.CallTool(ctx, params)
+	provider, exists := r.servers[server]
+	if !exists {
+		return nil, fmt.Errorf("server %q not found", server)
+	}
+
+	return provider.CallTool(ctx, &mcp.CallToolParams{
+		Name:      tool,
+		Arguments: params.Arguments,
+	})
+}
+
+// --- tool name encoding ---
+//
+// Builtin tools use bare names (e.g. "Bash"). External tools are encoded as
+// "mcp__<server>__<tool>" so the server can be recovered from the name alone.
+
+const builtinServer = "builtin"
+
+func qualifyToolName(server, tool string) string {
+	if server == builtinServer {
+		return tool
+	}
+	return "mcp__" + server + "__" + tool
+}
+
+func splitToolName(qualified string) (server, tool string, ok bool) {
+	if !strings.HasPrefix(qualified, "mcp__") {
+		return builtinServer, qualified, true
+	}
+	rest := qualified[len("mcp__"):]
+	i := strings.Index(rest, "__")
+	if i < 0 {
+		return "", "", false
+	}
+	return rest[:i], rest[i+2:], true
 }
