@@ -7,7 +7,6 @@ import (
 
 	"github.com/thomasbarrett/soren/internal/agent"
 	"github.com/thomasbarrett/soren/internal/config"
-	"github.com/thomasbarrett/soren/internal/tasks"
 	"github.com/thomasbarrett/soren/internal/tools"
 	"github.com/thomasbarrett/soren/internal/tools/builtin"
 	"github.com/thomasbarrett/soren/internal/transcript"
@@ -103,10 +102,6 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// Register builtin tools
 	builtin.Register(server)
-
-	// Register task manager
-	taskManager := tasks.NewTaskManager(sessionID.String())
-	taskManager.Register(server)
 
 	// Register Agent tool for sub-agent delegation
 	if err := agent.Register(server, cfg); err != nil {
