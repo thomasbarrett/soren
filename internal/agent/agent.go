@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/thomasbarrett/soren/internal/history"
 	"github.com/thomasbarrett/soren/internal/tools"
 	"github.com/thomasbarrett/soren/internal/transcript"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	openai "github.com/openai/openai-go"
 )
 
@@ -164,28 +164,7 @@ func (s *Session) Stream(ctx context.Context, message string) <-chan StreamEvent
 						Arguments: call.Function.Arguments,
 					}
 
-					arguments := make(map[string]any)
-					if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil {
-						ch <- EventError{Err: err}
-						return
-					}
-
-					res, err := s.agent.Config.ToolProvider.CallTool(ctx, &mcp.CallToolParams{
-						Name:      call.Function.Name,
-						Arguments: arguments,
-					})
-					if err != nil {
-						ch <- EventError{Err: err}
-						return
-					}
-
-					resultBytes, err := json.Marshal(res.StructuredContent)
-					if err != nil {
-						ch <- EventError{Err: err}
-						return
-					}
-
-					content := string(resultBytes)
+					content, _ := s.agent.callTool(ctx, call.ID, call.Function.Name, call.Function.Arguments)
 					if err := s.History.Add(openai.ToolMessage(content, call.ID)); err != nil {
 						ch <- EventError{Err: fmt.Errorf("failed to record tool result: %w", err)}
 						return
@@ -201,6 +180,40 @@ func (s *Session) Stream(ctx context.Context, message string) <-chan StreamEvent
 		ch <- EventError{Err: fmt.Errorf("max turns (%d) reached without final response", s.agent.Config.MaxTurns)}
 	}()
 	return ch
+}
+
+// callTool executes a tool call
+func (a *Agent) callTool(ctx context.Context, callID, name, argumentsJSON string) (string, error) {
+	arguments := make(map[string]any)
+	if err := json.Unmarshal([]byte(argumentsJSON), &arguments); err != nil {
+		return "", err
+	}
+
+	res, err := a.Config.ToolProvider.CallTool(ctx, &mcp.CallToolParams{
+		Name:      name,
+		Arguments: arguments,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	var contentStr string
+	if res.IsError {
+		for _, c := range res.Content {
+			if tc, ok := c.(*mcp.TextContent); ok {
+				contentStr += fmt.Sprintf("<error>%s</error>\n", tc.Text)
+			} else {
+				contentStr += "<error>unknown error content</error>\n"
+			}
+		}
+	} else {
+		resultBytes, err := json.Marshal(res.StructuredContent)
+		if err != nil {
+			return "", err
+		}
+		contentStr = string(resultBytes)
+	}
+	return contentStr, nil
 }
 
 // Send sends a user message and returns the agent's final text response.

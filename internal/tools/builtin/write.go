@@ -9,64 +9,36 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const writeDescription = `Write content to a file on disk.
-
-Usage:
-- By default overwrites existing files (set overwrite=false to prevent)
-- Creates parent directories automatically
-- ALWAYS prefer editing existing files over creating new ones
-- Use Write only when explicitly creating new files
-- Never use bash commands like 'echo >' or 'cat <<EOF' - use this tool instead`
-
-type WriteInput struct {
-	Path      string `json:"path"`
-	Content   string `json:"content"`
-	Overwrite *bool  `json:"overwrite,omitempty"`
+type WriteArgs struct {
+	Content  string `json:"content" jsonschema:"The content to write to the file."`
+	FilePath string `json:"file_path" jsonschema:"The absolute path to the file to write (must be absolute, not relative)."`
 }
 
-type WriteOutput struct {
-	Result string `json:"result,omitempty"`
-	Error  string `json:"error,omitempty"`
-}
-
-func writeFile(ctx context.Context, path, content string, overwrite bool) (string, error) {
-	absPath, err := validatePath(path)
+func Write(ctx context.Context, req *mcp.CallToolRequest, args WriteArgs) (*mcp.CallToolResult, any, error) {
+	absPath, err := validatePath(args.FilePath)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 
-	// Check if file exists and overwrite flag
-	if _, err := os.Stat(absPath); err == nil && !overwrite {
-		return "", fmt.Errorf("file already exists: %s (use overwrite=true to replace)", path)
+	// Check if file exists
+	exists := false
+	if _, err := os.Stat(absPath); err == nil {
+		exists = true
 	}
 
 	// Create parent directories if needed
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
-		return "", fmt.Errorf("failed to create directories: %w", err)
+		return nil, "", fmt.Errorf("failed to create directories: %w", err)
 	}
 
 	// Write the file
-	if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
-		return "", fmt.Errorf("failed to write file: %w", err)
+	if err := os.WriteFile(absPath, []byte(args.Content), 0o644); err != nil {
+		return nil, "", fmt.Errorf("failed to write file: %w", err)
 	}
 
-	return fmt.Sprintf("Successfully wrote file: %s", path), nil
-}
+	if exists {
+		return nil, fmt.Sprintf("The file %s has been updated successfully.", absPath), nil
+	}
 
-func RegisterWrite(server *mcp.Server) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "Write",
-		Description: writeDescription,
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args WriteInput) (*mcp.CallToolResult, WriteOutput, error) {
-		overwrite := true
-		if args.Overwrite != nil {
-			overwrite = *args.Overwrite
-		}
-
-		result, err := writeFile(ctx, args.Path, args.Content, overwrite)
-		if err != nil {
-			return nil, WriteOutput{Error: err.Error()}, err
-		}
-		return nil, WriteOutput{Result: result}, nil
-	})
+	return nil, fmt.Sprintf("File created successfully at: %s", absPath), nil
 }

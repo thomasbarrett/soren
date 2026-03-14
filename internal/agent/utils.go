@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/adrg/frontmatter"
@@ -50,9 +51,27 @@ func (a *Agent) buildSystemPrompt(ctx context.Context) error {
 	}
 
 	a.tools = tools
+
+	// Add environment section
+	environmentSection := getEnvironmentSection()
+	parts = append(parts, environmentSection)
+
 	a.systemPrompt = strings.Join(parts, "\n\n")
 
 	return nil
+}
+
+// getEnvironmentSection returns a formatted environment section for the system prompt
+func getEnvironmentSection() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "(unknown)"
+	}
+
+	platform := runtime.GOOS
+	shell := os.Getenv("SHELL")
+
+	return fmt.Sprintf("# Environment\nYou have been invoked in the current environment:\n - Primary working directory: %s\n - Platform: %s\n - Shell: %s", cwd, platform, shell)
 }
 
 type ToolSet struct {

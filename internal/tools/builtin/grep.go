@@ -11,19 +11,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const grepDescription = `Search file contents for a pattern.
-
-Usage:
-- Supports full regex patterns and literal string search
-- Case-insensitive search with ignore_case=true
-- Returns matches in 'file:line:content' format
-- Always prefer Grep over bash 'grep', 'rg', or 'ag' commands
-- For case-insensitive: set ignore_case=true (faster than regex (?i) flag)
-- Combine with Glob to search specific file types: Glob('*.py') then Grep
-- Use parallel Grep calls when searching different file sets
-- For complex multi-step searches, consider using multiple rounds`
-
-type GrepInput struct {
+type GrepArgs struct {
 	Pattern    string   `json:"pattern"`
 	Files      []string `json:"files"`
 	IgnoreCase *bool    `json:"ignore_case,omitempty"`
@@ -98,24 +86,19 @@ func grepFiles(ctx context.Context, pattern string, files []string, ignoreCase b
 	return matches, nil
 }
 
-func RegisterGrep(server *mcp.Server) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "Grep",
-		Description: grepDescription,
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args GrepInput) (*mcp.CallToolResult, GrepOutput, error) {
-		ignoreCase := false
-		if args.IgnoreCase != nil {
-			ignoreCase = *args.IgnoreCase
-		}
+func Grep(ctx context.Context, req *mcp.CallToolRequest, args GrepArgs) (*mcp.CallToolResult, GrepOutput, error) {
+	ignoreCase := false
+	if args.IgnoreCase != nil {
+		ignoreCase = *args.IgnoreCase
+	}
 
-		matches, err := grepFiles(ctx, args.Pattern, args.Files, ignoreCase)
-		if err != nil {
-			return nil, GrepOutput{Error: err.Error()}, err
-		}
+	matches, err := grepFiles(ctx, args.Pattern, args.Files, ignoreCase)
+	if err != nil {
+		return nil, GrepOutput{Error: err.Error()}, err
+	}
 
-		return nil, GrepOutput{
-			Matches: matches,
-			Result:  fmt.Sprintf("Found %d matches for pattern '%s'", len(matches), args.Pattern),
-		}, nil
-	})
+	return nil, GrepOutput{
+		Matches: matches,
+		Result:  fmt.Sprintf("Found %d matches for pattern '%s", len(matches), args.Pattern),
+	}, nil
 }
