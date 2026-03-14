@@ -9,6 +9,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -231,13 +233,32 @@ func (m Model) View() string {
 	}
 
 	const pad = 2 // width of "⏺ " prefix
-	wrapStyle := lipgloss.NewStyle().Width(width - 4)
 
 	renderThinking := func(text string) string {
 		return greyStyle.Render("\u23fa") + " " + indent(greyStyle.Width(width-4).Render(strings.TrimSpace(text)), pad) + "\n\n"
 	}
 	renderText := func(text string) string {
-		return greyStyle.Render("\u23fa") + " " + indent(wrapStyle.Render(strings.TrimSpace(text)), pad) + "\n\n"
+		// Render Markdown using Glamour
+		margin := uint(0)
+		style := styles.LightStyleConfig
+		if lipgloss.DefaultRenderer().HasDarkBackground() {
+			style = styles.DarkStyleConfig
+		}
+		style.Document.Margin = &margin
+
+		renderer, _ := glamour.NewTermRenderer(
+			glamour.WithStyles(style),
+			glamour.WithWordWrap(width-pad),
+		)
+
+		rendered, err := renderer.Render(text)
+		if err != nil {
+			rendered = text // fallback to plain text
+		}
+
+		rendered = strings.TrimSpace(rendered)
+
+		return greyStyle.Render("\u23fa") + " " + indent(rendered, 2) + "\n\n"
 	}
 
 	// Committed conversation turns.
