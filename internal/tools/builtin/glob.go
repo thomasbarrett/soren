@@ -12,8 +12,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// globDescription is loaded from descriptions/glob.md using go:embed
-
 const maxGlobResults = 100
 
 type GlobArgs struct {

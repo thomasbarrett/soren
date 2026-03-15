@@ -11,17 +11,31 @@ import (
 // MCPServer holds configuration for an MCP server
 type MCPServer struct {
 	Name        string   `json:"name"`
-	Transport   string   `json:"transport,omitempty"`
+	Transport   string   `json:"transport"`
 	Command     string   `json:"command"`
 	Args        []string `json:"args,omitempty"`
 	Env         []string `json:"env,omitempty"`
-	WorkingDir  string   `json:"working_dir,omitempty"`
 	Description string   `json:"description,omitempty"`
 }
 
 // Settings represents the main Soren settings
 type Settings struct {
 	MCPServers []MCPServer `json:"mcpServers,omitempty"`
+}
+
+func (s *Settings) Validate() error {
+	for _, server := range s.MCPServers {
+		if server.Name == "" {
+			return fmt.Errorf("server name is required")
+		}
+		if server.Command == "" {
+			return fmt.Errorf("server command is required")
+		}
+		if server.Transport == "" {
+			return fmt.Errorf("server transport is required")
+		}
+	}
+	return nil
 }
 
 // DefaultSettingsPath returns the default path for the settings file
@@ -56,6 +70,10 @@ func LoadSettingsFromFile(settingsPath string) (*Settings, error) {
 	var settings Settings
 	if err := json.Unmarshal(data, &settings); err != nil {
 		return nil, fmt.Errorf("failed to parse settings file: %w", err)
+	}
+
+	if err := settings.Validate(); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
 	return &settings, nil

@@ -12,11 +12,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const defaultReadLineLimit = 2000
+const defaultReadLimit = 2000
 
 type ReadArgs struct {
 	FilePath string `json:"file_path" jsonschema:"The absolute path to the file to read."`
-	Limit    int    `json:"limit,omitempty" jsonschema:"The number of lines to read. Only provide if the file is too large to read at once."`
+	Limit    *int   `json:"limit,omitempty" jsonschema:"The number of lines to read. Only provide if the file is too large to read at once."`
 	Offset   int    `json:"offset,omitempty" jsonschema:"The line number to start reading from. Only provide if the file is too large to read at once."`
 }
 
@@ -46,9 +46,9 @@ func Read(ctx context.Context, req *mcp.CallToolRequest, args ReadArgs) (*mcp.Ca
 	}
 	defer file.Close()
 
-	limit := defaultReadLineLimit
-	if args.Limit >= 0 {
-		limit = args.Limit
+	limit := defaultReadLimit
+	if args.Limit != nil {
+		limit = *args.Limit
 	}
 
 	var lines []string

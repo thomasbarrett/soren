@@ -7,7 +7,6 @@ import (
 )
 
 // Register wires all tools into the MCP server
-
 func Register(server *mcp.Server) {
 	RegisterRead(server)
 	RegisterWrite(server)
