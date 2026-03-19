@@ -6,11 +6,11 @@ import (
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	openai "github.com/openai/openai-go"
+
 	"github.com/thomasbarrett/soren/internal/history"
 	"github.com/thomasbarrett/soren/internal/tools"
 	"github.com/thomasbarrett/soren/internal/transcript"
-
-	openai "github.com/openai/openai-go"
 )
 
 // Config holds the configuration for an agent
@@ -21,7 +21,6 @@ type Config struct {
 	ConfigPath   string // Path to config.yaml for dynamic prompt building
 	Model        string
 	Name         string
-	MaxTurns     int
 	Tools        ToolSet
 }
 
@@ -67,8 +66,8 @@ type StreamEvent interface {
 // EventThinking is emitted each time the LLM is called.
 type EventThinking struct{}
 
-// EventToolCall is emitted when the LLM requests a tool call.
-type EventToolCall struct {
+// EventToolUse is emitted when the LLM requests a tool call.
+type EventToolUse struct {
 	ID        string
 	Name      string
 	Arguments string
@@ -80,30 +79,31 @@ type EventToolResult struct {
 	Content string
 }
 
-// EventText is emitted with the agent's final text response.
-type EventText struct{ Content string }
+// EventOutput is emitted with the agent's final text response.
+type EventOutput struct{ Content string }
 
 // EventThinkingDelta is emitted for each reasoning/thinking token streamed from the model.
 type EventThinkingDelta struct{ Token string }
 
-// EventTextDelta is emitted for each response text token streamed from the model.
-type EventTextDelta struct{ Token string }
+// EventOutputDelta is emitted for each response text token streamed from the model.
+type EventOutputDelta struct{ Token string }
 
 // EventError is emitted if the agent encounters an unrecoverable error.
 type EventError struct{ Err error }
 
 func (EventThinking) streamEvent()      {}
-func (EventToolCall) streamEvent()      {}
+func (EventToolUse) streamEvent()       {}
 func (EventToolResult) streamEvent()    {}
-func (EventText) streamEvent()          {}
+func (EventOutput) streamEvent()        {}
 func (EventThinkingDelta) streamEvent() {}
-func (EventTextDelta) streamEvent()     {}
+func (EventOutputDelta) streamEvent()   {}
 func (EventError) streamEvent()         {}
 
 // Stream sends a user message and emits a StreamEvent for each significant step.
-// The returned channel is closed after EventText or EventError is sent.
+// The returned channel is closed after EventOutput or EventError is sent.
 func (s *Session) Stream(ctx context.Context, message string) <-chan StreamEvent {
 	ch := make(chan StreamEvent)
+
 	go func() {
 		defer close(ch)
 
@@ -112,7 +112,7 @@ func (s *Session) Stream(ctx context.Context, message string) <-chan StreamEvent
 			return
 		}
 
-		for turn := 1; turn <= s.agent.Config.MaxTurns; turn++ {
+		for {
 			ch <- EventThinking{}
 
 			stream := s.agent.Config.ModelClient.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
@@ -142,7 +142,7 @@ func (s *Session) Stream(ctx context.Context, message string) <-chan StreamEvent
 						ch <- EventThinkingDelta{Token: token}
 					}
 					if token := raw.Choices[0].Delta.Content; token != "" {
-						ch <- EventTextDelta{Token: token}
+						ch <- EventOutputDelta{Token: token}
 					}
 				}
 			}
@@ -158,7 +158,7 @@ func (s *Session) Stream(ctx context.Context, message string) <-chan StreamEvent
 
 			if len(acc.Choices[0].Message.ToolCalls) > 0 {
 				for _, call := range acc.Choices[0].Message.ToolCalls {
-					ch <- EventToolCall{
+					ch <- EventToolUse{
 						ID:        call.ID,
 						Name:      call.Function.Name,
 						Arguments: call.Function.Arguments,
@@ -172,13 +172,12 @@ func (s *Session) Stream(ctx context.Context, message string) <-chan StreamEvent
 					ch <- EventToolResult{CallID: call.ID, Content: content}
 				}
 			} else {
-				ch <- EventText{Content: acc.Choices[0].Message.Content}
+				ch <- EventOutput{Content: acc.Choices[0].Message.Content}
 				return
 			}
 		}
-
-		ch <- EventError{Err: fmt.Errorf("max turns (%d) reached without final response", s.agent.Config.MaxTurns)}
 	}()
+
 	return ch
 }
 
@@ -213,19 +212,20 @@ func (a *Agent) callTool(ctx context.Context, callID, name, argumentsJSON string
 		}
 		contentStr = string(resultBytes)
 	}
+
 	return contentStr, nil
 }
 
-// Send sends a user message and returns the agent's final text response.
-// It is a convenience wrapper around Stream.
+// Send sends a user message and returns the agent's final output.
 func (s *Session) Send(ctx context.Context, message string) (string, error) {
 	for event := range s.Stream(ctx, message) {
 		switch e := event.(type) {
-		case EventText:
+		case EventOutput:
 			return e.Content, nil
 		case EventError:
 			return "", e.Err
 		}
 	}
+
 	return "", fmt.Errorf("stream closed without response")
 }

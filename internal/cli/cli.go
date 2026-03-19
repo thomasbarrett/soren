@@ -78,7 +78,6 @@ func run(cmd *cobra.Command, args []string) error {
 		ModelClient:  modelClient,
 		Model:        model,
 		Name:         agentName,
-		MaxTurns:     32,
 	}
 
 	// Create embedded server

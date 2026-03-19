@@ -24,7 +24,6 @@ var (
 	userStyle   = lipgloss.NewStyle().
 			Background(lipgloss.AdaptiveColor{Light: "255", Dark: "255"}).
 			Foreground(lipgloss.AdaptiveColor{Light: "0", Dark: "0"})
-	greyLine = greyStyle.Render
 )
 
 // turnKind identifies the kind of a committed conversation turn.
@@ -89,7 +88,6 @@ func New(s *agent.Session) Model {
 	ti.Prompt = "❯ "
 	ti.Focus()
 	ti.CharLimit = 256
-	ti.Width = 50
 
 	return Model{
 		session:   s,
@@ -139,12 +137,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.thinkingBuf += msg.Token
 		cmds = append(cmds, waitForEvent(m.eventCh))
 
-	case agent.EventTextDelta:
+	case agent.EventOutputDelta:
 		m.thinking = false
 		m.textBuf += msg.Token
 		cmds = append(cmds, waitForEvent(m.eventCh))
 
-	case agent.EventToolCall:
+	case agent.EventToolUse:
 		m.thinking = false
 		m.inFlight = append(m.inFlight, toolCallState{
 			id:   msg.ID,
@@ -163,7 +161,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, waitForEvent(m.eventCh))
 
-	case agent.EventText:
+	case agent.EventOutput:
 		m.thinking = false
 		if len(m.inFlight) > 0 {
 			m.turns = append(m.turns, chatTurn{kind: turnTools, thinking: m.thinkingBuf, toolCalls: m.inFlight})
@@ -205,25 +203,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// indent inserts padding spaces after every newline so that continuation
-// lines align with the text after the leading bullet/icon.
-func indent(s string, pad int) string {
-	return strings.ReplaceAll(s, "\n", "\n"+strings.Repeat(" ", pad))
-}
-
 // View renders the chat UI
 func (m Model) View() string {
-	var b strings.Builder
-	width := m.width
-	if width <= 0 {
-		width = 50
+	if m.width <= 0 {
+		return ""
 	}
+
+	var b strings.Builder
 
 	const pad = 2 // width of "⏺ " prefix
 
-	renderThinking := func(text string) string {
-		return greyStyle.Render("\u23fa") + " " + indent(greyStyle.Width(width-4).Render(strings.TrimSpace(text)), pad) + "\n\n"
-	}
+	thinkingStyle := NewParagraphStyle().
+		Style(greyStyle).
+		Width(m.width).
+		InitialPrefix("\u2502 ").
+		SubsequentPrefix("\u2502 ")
+
+	responseStyle := NewParagraphStyle().
+		Width(m.width).
+		InitialPrefix(greyStyle.Render("\u23fa") + " ").
+		SubsequentPrefix("  ")
+
 	renderText := func(text string) string {
 		// Render Markdown using Glamour
 		margin := uint(0)
@@ -235,7 +235,7 @@ func (m Model) View() string {
 
 		renderer, _ := glamour.NewTermRenderer(
 			glamour.WithStyles(style),
-			glamour.WithWordWrap(width-pad),
+			glamour.WithWordWrap(m.width-pad),
 		)
 
 		rendered, err := renderer.Render(text)
@@ -245,7 +245,7 @@ func (m Model) View() string {
 
 		rendered = strings.TrimSpace(rendered)
 
-		return greyStyle.Render("\u23fa") + " " + indent(rendered, 2) + "\n\n"
+		return responseStyle.Render(rendered) + "\n\n"
 	}
 
 	// Committed conversation turns.
@@ -255,12 +255,12 @@ func (m Model) View() string {
 			b.WriteString(fmt.Sprintf("%s\n\n", userStyle.Render(fmt.Sprintf("\u276f %s ", t.content))))
 		case turnAssistant:
 			if t.thinking != "" {
-				b.WriteString(renderThinking(t.thinking))
+				b.WriteString(thinkingStyle.Render(strings.TrimSpace(t.thinking)) + "\n\n")
 			}
 			b.WriteString(renderText(t.content))
 		case turnTools:
 			if t.thinking != "" {
-				b.WriteString(renderThinking(t.thinking))
+				b.WriteString(thinkingStyle.Render(strings.TrimSpace(t.thinking)) + "\n\n")
 			}
 			for _, tc := range t.toolCalls {
 				b.WriteString(blueStyle.Render("\u23fa") + " " + tc.name + "(" + tc.args + ")\n")
@@ -271,7 +271,7 @@ func (m Model) View() string {
 
 	// Live thinking tokens for the current turn.
 	if m.thinkingBuf != "" {
-		b.WriteString(renderThinking(m.thinkingBuf))
+		b.WriteString(thinkingStyle.Render(strings.TrimSpace(m.thinkingBuf)) + "\n\n")
 	}
 
 	// In-flight tool calls for the current turn.
@@ -299,14 +299,13 @@ func (m Model) View() string {
 		b.WriteString(redStyle.Render("\u23fa") + " " + redStyle.Render(m.errMsg) + "\n\n")
 	}
 
-	// Queued messages not yet sent — show them optimistically.
 	for _, pending := range m.queue {
-		b.WriteString(fmt.Sprintf("%s\n\n", userStyle.Render(fmt.Sprintf("\u276f %s ", pending))))
+		b.WriteString(userStyle.Render("\u276f "+pending+" ") + "\n\n")
 	}
 
-	b.WriteString(greyLine(strings.Repeat("\u2500", width)) + "\n")
+	b.WriteString(greyStyle.Render(strings.Repeat("\u2500", m.width)) + "\n")
 	b.WriteString(m.textInput.View() + "\n")
-	b.WriteString(greyLine(strings.Repeat("\u2500", width)) + "\n")
+	b.WriteString(greyStyle.Render(strings.Repeat("\u2500", m.width)) + "\n")
 
 	return b.String()
 }
