@@ -14,15 +14,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Mode represents the current interaction mode
-type Mode int
-
-const (
-	ModeNormal Mode = iota
-	ModePlan
-	ModeAutoAccept
-)
-
 // Styles for the UI
 var (
 	cyanStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
@@ -89,7 +80,6 @@ type Model struct {
 	errMsg      string // last error message to display
 	textInput   textinput.Model
 	width       int
-	currentMode Mode
 }
 
 // New creates a new UI model
@@ -102,10 +92,9 @@ func New(s *agent.Session) Model {
 	ti.Width = 50
 
 	return Model{
-		session:     s,
-		textInput:   ti,
-		width:       50,
-		currentMode: ModeNormal,
+		session:   s,
+		textInput: ti,
+		width:     50,
 	}
 }
 
@@ -129,8 +118,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.queue = append(m.queue, input)
 				m.textInput.SetValue("")
 			}
-		case "shift+tab":
-			m.currentMode = (m.currentMode + 1) % 3
 		}
 
 	case tea.WindowSizeMsg:
@@ -321,15 +308,5 @@ func (m Model) View() string {
 	b.WriteString(m.textInput.View() + "\n")
 	b.WriteString(greyLine(strings.Repeat("\u2500", width)) + "\n")
 
-	var modeStr string
-	switch m.currentMode {
-	case ModeNormal:
-		modeStr = "? for shortcuts"
-	case ModePlan:
-		modeStr = cyanStyle.Render("\u23f8 plan mode on")
-	case ModeAutoAccept:
-		modeStr = purpleStyle.Render("\u23f5\u23f5 accept edits on")
-	}
-	b.WriteString(modeStr)
 	return b.String()
 }
